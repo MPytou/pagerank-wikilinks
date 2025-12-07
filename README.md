@@ -23,3 +23,18 @@ Comparer les performances de PageRank implémenté en **PySpark RDD** vs **PySpa
 ## Résultats et reporting
 - Sauvegarder `experiments/results.csv` et `experiments/plots/*`.
 - Inclure les screenshots Spark UI et les event logs.
+
+## Expériences
+| Config | Implémentation | Temps (s) | Top PageRank |
+|--------|----------------|-----------|--------------|
+| 2 nœuds | DataFrame      | X         | Category:Living_people ... |
+| 2 nœuds | RDD            | Y         | Category:Living_people ... |
+| 4 nœuds | DataFrame      | X         | ... |
+| 4 nœuds | RDD            | Y         | ... |
+| 6 nœuds | DataFrame      | X         | ... |
+| 6 nœuds | RDD            | Y         | ... |
+
+## Observations
+- Performance DataFrame vs RDD
+- Influence du nombre de nœuds sur le temps
+- Top entité Wikipedia : `Category:Living_people`

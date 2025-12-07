@@ -1,4 +1,4 @@
-# PageRank 2025-2026 — TP "Large Scale Data Management" (Pascal Molli)
+# PageRank 2025-2026 — TP "Large Scale Data Management"
 
 **Sujet / objectif**
 Comparer les performances de PageRank implémenté en **PySpark RDD** vs **PySpark DataFrame** sur le jeu de données Wikilinks (DBpedia).

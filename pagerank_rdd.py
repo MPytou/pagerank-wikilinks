@@ -1,62 +1,76 @@
-#!/usr/bin/env python3
-"""
-PageRank using PySpark RDD
-Usage: spark-submit pagerank_rdd.py --input parquet/adj_1pc --nodes parquet/nodes_1pc --out parquet/pagerank_1pc --num-iters 10 --num-parts 200
-"""
-import argparse
 from pyspark.sql import SparkSession
-from pyspark import StorageLevel
+import time
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--input', required=True, help='Parquet adjacency input (src_id, neighbors)')
-parser.add_argument('--nodes', required=True, help='Parquet nodes (id, uri)')
-parser.add_argument('--out', required=True, help='Output prefix for ranks parquet/csv')
-parser.add_argument('--num-iters', type=int, default=10)
-parser.add_argument('--num-parts', type=int, default=200)
-parser.add_argument('--damping', type=float, default=0.85)
-args = parser.parse_args()
+# --- Configuration ---
+NUM_PARTITIONS = 200  # Nombre de partitions optimisé pour un cluster de 6 nœuds (à ajuster)
+DAMPING_FACTOR = 0.85
+NUM_ITERS = 10
 
-spark = SparkSession.builder.appName('PageRank_RDD').getOrCreate()
+spark = SparkSession.builder.appName("PageRankRDD_Optimized").getOrCreate()
 sc = spark.sparkContext
 
-# Read adjacency
-adj_df = spark.read.parquet(args.input)
-# Convert to RDD: (src_id, [dst_id, ...])
-adj_rdd = adj_df.rdd.map(lambda r: (r['src_id'], r['neighbors']))
+print(f"Démarrage PageRank RDD avec {NUM_PARTITIONS} partitions...")
 
-# Partition RDD with HashPartitioner to keep partitioning stable
-adj_rdd = adj_rdd.partitionBy(args.num_parts)
-adj_rdd.persist(StorageLevel.MEMORY_AND_DISK_SER)
+# --- 1. Chargement et Préparation des Données ---
 
-# initialize ranks
-ranks = adj_rdd.mapValues(lambda _: 1.0).partitionBy(args.num_parts)
+# Charger edges 10%
+edges_rdd = sc.textFile("data/edges10.tsv") \
+              .map(lambda line: line.split("\t")) \
+              .map(lambda x: (x[0], x[1]))
 
-for i in range(args.num_iters):
-# join adjacency with ranks - same partitioner -> avoids wide shuffle
-contribs = adj_rdd.join(ranks).flatMap(
-lambda x: [(dst, x[1][1] / float(len(x[1][0]))) for dst in x[1][0]]
-)
+# Construire la liste d’adjacence (Links RDD)
+# links: (src, [dst1, dst2, ...])
+# Partitionnement initial des liens (Structure statique)
+links = edges_rdd.groupByKey() \
+                 .mapValues(list) \
+                 .partitionBy(NUM_PARTITIONS) \
+                 .cache()  # Cache le RDD statique réutilisé 10 fois
 
-ranks = contribs.reduceByKey(lambda a, b: a + b).mapValues(
-lambda v: (1 - args.damping) + args.damping * v
-).partitionBy(args.num_parts).persist(StorageLevel.MEMORY_AND_DISK_SER)
+# Extraction du partitionneur pour garantir le co-partitionnement
+partitioner = links.partitioner
 
-# Optional: materialize to measure iteration time
-ranks.count()
-print(f'Iteration {i+1} done')
+# --- 2. Initialisation des Ranks ---
 
-# Save ranks
-ranks_df = ranks.toDF(['id', 'pagerank'])
-ranks_df.write.mode('overwrite').parquet(args.out)
+# Initialiser ranks à 1.0 (ou 1/N si vous voulez être exact, mais 1.0 simplifie la logique)
+# Le Ranks RDD doit être CO-PARTITIONNÉ avec le Links RDD
+nodes = links.keys().distinct()
+ranks = nodes.map(lambda x: (x, 1.0)) \
+             .partitionBy(NUM_PARTITIONS, partitioner) # Co-partitionnement initial
 
-# join with nodes to get URIs
-nodes_df = spark.read.parquet(args.nodes)
-joined = ranks_df.join(nodes_df, on='id', how='left')
-joined.write.mode('overwrite').parquet(args.out + '_with_uri')
+# Début du chronométrage
+start = time.time()
 
+# --- 3. Boucle PageRank RDD (avec Co-Partitionnement) ---
 
-# optional CSV top100
-joined.orderBy('pagerank', ascending=False).limit(100).write.mode('overwrite').csv(args.out + '_top100_csv', header=True)
+for i in range(NUM_ITERS):
+    # Jointure des liens et des ranks.
+    # Grâce au .partitionBy précédent, cette jointure est locale, sans shuffle !
+    contribs_rdd = links.join(ranks) \
+                        .flatMap(lambda x: [
+                            (dst, x[1][1] / len(x[1][0])) 
+                            # x[1][1] est le rank (valeur de ranks), x[1][0] est la liste des voisins (valeur de links)
+                            for dst in x[1][0]
+                        ])
+    
+    # Agrégation des contributions par nœud (cette étape nécessite un shuffle)
+    ranks = contribs_rdd.reduceByKey(lambda x,y: x+y, numPartitions=NUM_PARTITIONS) \
+                        .mapValues(lambda rank_sum: DAMPING_FACTOR * rank_sum + (1.0 - DAMPING_FACTOR)) \
+                        .partitionBy(NUM_PARTITIONS, partitioner) # Re-partitionnement garanti pour la prochaine jointure locale
+    
+    print(f"Iteration {i+1} complète")
 
+# Arrêt du chronométrage
+end = time.time()
+
+# --- 4. Résultats ---
+
+# Affichage des 10 meilleurs nœuds
+top_nodes = ranks.takeOrdered(10, key=lambda x: -x[1])
+
+print("\nTop 10 nœuds avec PageRank :")
+for node_id, rank in top_nodes:
+    print(f"{node_id} : {rank}")
+
+print("\nTemps total :", end - start, "secondes")
 
 spark.stop()

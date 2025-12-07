@@ -1,4 +1,18 @@
+# Data outputs
+data/
+parquet/
+csv/
+
+# Python
 __pycache__/
 *.pyc
-data/
-reports/
+
+# env
+venv/
+.env
+
+# logs
+*.log
+
+# OS
+.DS_Store

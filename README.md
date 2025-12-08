@@ -16,7 +16,6 @@ Comparer les performances de PageRank implémenté en **PySpark RDD** vs **PySpa
 1. Installer Java, Python, Spark (ex: Spark 3.5.0) et configurer SPARK_HOME.
 2. Télécharger et sampler le dataset (`./scripts/sample_data.sh`).
 3. Poussé les données sur le datastore (remplacer pagerank-data par le nom de votre bucket) :
-   - `gsutil cp data/edges_1pc.tsv gs://pagerank-data/data/`
    - `gsutil cp data/edges_10pc.tsv gs://pagerank-data/data/`
    - `gsutil cp pagerank_rdd.py gs://pagerank-data/scripts/`
    - `gsutil cp pagerank_df.py gs://pagerank-data/scripts/`

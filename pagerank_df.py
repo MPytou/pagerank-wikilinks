@@ -77,10 +77,10 @@ if __name__ == "__main__":
     
     end_time = time.time()
 
-    print(f" TEMPS BOUCLE (DataFrame): {end_time - loop_start:.2f} secondes")
-    print(f" TEMPS TOTAL (Inc. Chargement): {end_time - start_time:.2f} secondes")
+    print(f" LOOP TIME (DataFrame): {end_time - loop_start:.2f} seconds")
+    print(f" TOTAL TIME (Inc. Loading): {end_time - start_time:.2f} seconds")
     
     if best:
-        print(f" GAGNANT: {best['src']} avec un score de {best['rank']}")
+        print(f" WINNER: {best['src']} with a score of {best['rank']}")
 
     spark.stop()

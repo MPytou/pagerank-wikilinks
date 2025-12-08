@@ -15,10 +15,24 @@ Comparer les performances de PageRank implémenté en **PySpark RDD** vs **PySpa
 ## Quick start (sur Debian/Ubuntu)
 1. Installer Java, Python, Spark (ex: Spark 3.5.0) et configurer SPARK_HOME.
 2. Télécharger et sampler le dataset (`scripts/sample_data.sh`).
-3. Préprocesser : `spark-submit scripts/preprocess.py --input data/edges_1pc.tsv --out parquet/`
 4. Lancer PageRank RDD :
-`spark-submit --master local[*] pagerank_rdd.py --input parquet/adj_1pc --nodes parquet/nodes_1pc --out parquet/pagerank_1pc --num-iters 10 --num-parts 200`
-5. Lancer PageRank DataFrame analogue.
+    spark-submit \
+        --master local[*] \
+        --driver-memory 6g \
+        --executor-memory 6g \
+        pagerank_rdd.py
+5. Lancer PageRank DataFrame :
+     spark-submit \
+      --master local[*] \
+      --driver-memory 6g \
+      --executor-memory 6g \
+      pagerank_df.py
+6. Attention au chemin du fichier data :
+   - data/edges_1pc.tsv
+   - gs://pagerank-data/data/edges_1pc.tsv
+   Pour push les fichiers sur le datastore :
+   - gsutil cp data/edges_1pc.tsv gs://pagerank-data/data/
+   - gsutil cp data/edges_10pc.tsv gs://pagerank-data/data/
 
 ## Résultats et reporting
 - Sauvegarder `experiments/results.csv` et `experiments/plots/*`.

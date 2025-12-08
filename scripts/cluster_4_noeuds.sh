@@ -25,7 +25,7 @@ echo "### Exécution des Jobs sur ${CLUSTER_NAME} ###"
 
 # --- Exécution PageRank RDD ---
 echo "--- Exécution PageRank RDD ---"
-gcloud dataproc jobs submit pyspark \
+gcloud dataproc jobs submit pyspark ${GCS_BUCKET}/scripts/pagerank_rdd.py \
     --cluster=${CLUSTER_NAME} \
     --region=${REGION} \
     "${GCS_BUCKET}/scripts/pagerank_rdd.py" \
@@ -35,10 +35,10 @@ gcloud dataproc jobs submit pyspark \
 
 # --- Exécution PageRank DataFrame ---
 echo "--- Exécution PageRank DataFrame ---"
-gcloud dataproc jobs submit pyspark \
+gcloud dataproc jobs submit pyspark ${GCS_BUCKET}/scripts/pagerank_df.py \
     --cluster=${CLUSTER_NAME} \
     --region=${REGION} \
-    "${GCS_BUCKET}/scripts/pagerank_df.py" \
+    "${GCS_BUCKET}/scripts/pagerank_rdd.py" \
     -- \
     --input "${DATA_INPUT_PATH}" \
     --num-parts 200

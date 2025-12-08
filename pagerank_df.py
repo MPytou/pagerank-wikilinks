@@ -1,68 +1,74 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, count, when, coalesce
+import sys
 import time
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lit, count
+from pyspark import StorageLevel
 
-spark = SparkSession.builder.appName("PageRankDF_Optimized").getOrCreate()
+# CONFIGURATION
+# BUCKET = "gs://your-bucket-name"
+BUCKET = "gs://pagerbucket10"
 
-# -- 1. Préparation des Données --
+INPUT_DIR = f"{BUCKET}/cleaned_data"
+ITERATIONS = 10
 
-# Charger edges (links)
-# Assurez-vous que le chemin et le format sont corrects
-edges = spark.read.csv("data/edges10.tsv", sep="\t", header=False, inferSchema=False).toDF("src", "dst")
+if __name__ == "__main__":
+    spark = SparkSession.builder.appName("PageRankDataFrame").getOrCreate()
 
-# Calculer le nombre total de nœuds
-nodes_list = edges.select(col("src")).union(edges.select(col("dst"))).distinct()
-N = nodes_list.count()
-DAMPING_FACTOR = 0.85
-NUM_ITERS = 10
-
-# Calculer les degrés sortants (Out-Degrees)
-out_degrees = edges.groupBy("src").agg(count("dst").alias("out_degree"))
-
-# -- 2. Initialisation --
-
-# Initialisation : PageRank = 1/N pour tous les nœuds.
-# Le DataFrame des ranks contient toutes les URIs de nœuds.
-ranks = nodes_list.withColumn("rank", lit(1.0 / N)).withColumnRenamed("src", "uri")
-
-# Joindre les liens aux degrés sortants (structure d'adjacence pré-calculée)
-# df_links: (src, dst, out_degree)
-df_links = edges.join(out_degrees, on="src")
-
-start = time.time()
-
-# -- 3. Boucle PageRank (Utilisation exclusive de DataFrames) --
-
-for i in range(NUM_ITERS):
-    # Jointure pour calculer les contributions
-    # Calculer (Rank_Source / Out_Degree_Source) et attribuer à la Destination
+    # On désactive le Broadcast pour éviter l'explosion RAM sur les petites machines
+    spark.conf.set("spark.sql.autoBroadcastJoinThreshold", -1)
     
-    # 3.1 Joindre les ranks actuels (ranks) avec la table des liens (df_links)
-    contribs = df_links.join(ranks, df_links.src == ranks.uri) \
-                       .withColumn("contribution", col("rank") / col("out_degree")) \
-                       .select(col("dst").alias("uri"), "contribution")
+    # on lui dit de préférer le SortMergeJoin
+    spark.conf.set("spark.sql.join.preferSortMergeJoin", "true")
 
-    # 3.2 Agréger les contributions par nœud cible (dst)
-    # L'agrégation se fait entièrement via Spark SQL (groupBy)
-    new_ranks_sum = contribs.groupBy("uri").agg(sum_("contribution").alias("rank_sum"))
+    start_time = time.time()
 
-    # 3.3 Appliquer la formule PageRank : PR_nouveau = (1-d) + d * Sum(PR_recu)
-    ranks = new_ranks_sum.withColumn("rank", lit(1.0 - DAMPING_FACTOR) + lit(DAMPING_FACTOR) * col("rank_sum")) \
-                         .select("uri", "rank")
+    # 1. CHARGEMENT
+    links = spark.read.parquet(INPUT_DIR)
+
+    # 2. PRE-CALCUL & PARTITIONNEMENT 
+    # On calcule les degrés sortants
+    out_degrees = links.groupBy("src").agg(count("*").alias("out_degree"))
     
-    # Gérer les noeuds sans liens entrants (ils conservent le rank initial par défaut)
-    # Nous joignons les ranks calculés (new_ranks_sum) aux nœuds initiaux (nodes_list) pour s'assurer qu'aucun nœud n'est perdu.
-    ranks = nodes_list.select(col("src").alias("uri")).join(ranks, on="uri", how="left_outer") \
-                      .withColumn("rank", coalesce(col("rank"), lit(1.0 / N))) \
-                      .select("uri", "rank")
+    # On joint.
+    links_with_degree = links.join(out_degrees, "src")
+    
+    # On repartitionne par "src", Shuffle avant la boucle
+    links_partitioned = links_with_degree.repartition(200, "src")
+    
+    # On persiste sur DISQUE et MEMOIRE.
+    # Si ça ne tient pas en RAM, ça ira sur le disque sans planter
+    links_partitioned.persist(StorageLevel.MEMORY_AND_DISK)
+    
+    # On force le calcul maintenant pour que le temps de "préparation" ne soit pas compté dans la boucle
+    # et pour vérifier que le cache est bien rempli
+    count_links = links_partitioned.count()
+    print(f"Graph chargé avec {count_links} liens.")
 
-    print(f"Iteration {i+1} complète. Nombre de nœuds dans les ranks: {ranks.count()}")
+    # 3. INITIALISATION DES RANGS
+    ranks = links_partitioned.select("src").distinct().withColumn("rank", lit(1.0))
 
-end = time.time()
-print(f"Temps total pour {NUM_ITERS} itérations:", end - start, "secondes")
+    # 4. BOUCLE PAGERANK
+    print("Début du calcul itératif...")
+    loop_start = time.time()
+    
+    for i in range(ITERATIONS):
+        # Seul 'ranks' va bouger à travers le réseau.
+        contributions = links_partitioned.join(ranks, "src") \
+             .select(col("dst").alias("page"), (col("rank") / col("out_degree")).alias("contribution"))
+        
+        ranks = contributions.groupBy("page").sum("contribution") \
+            .withColumn("rank", 0.15 + 0.85 * col("sum(contribution)")) \
+            .select(col("page").alias("src"), "rank")
 
-# -- 4. Top PageRank --
-print("\nTop 10 nœuds avec URI et PageRank :")
-ranks.orderBy(col("rank").desc()).limit(10).show(truncate=False)
+    # 5. RESULTAT
+    best = ranks.orderBy(col("rank").desc()).first()
+    
+    end_time = time.time()
 
-spark.stop()
+    print(f" TEMPS BOUCLE (DataFrame): {end_time - loop_start:.2f} secondes")
+    print(f" TEMPS TOTAL (Inc. Chargement): {end_time - start_time:.2f} secondes")
+    
+    if best:
+        print(f" GAGNANT: {best['src']} avec un score de {best['rank']}")
+
+    spark.stop()

@@ -1,76 +1,55 @@
-from pyspark.sql import SparkSession
+import sys
 import time
+from pyspark.sql import SparkSession
+from pyspark import StorageLevel
 
-# --- Configuration ---
-NUM_PARTITIONS = 200  # Nombre de partitions optimisé pour un cluster de 6 nœuds (à ajuster)
-DAMPING_FACTOR = 0.85
-NUM_ITERS = 10
+# CONFIGURATION
+BUCKET = "gs://pagerbucket10"
+INPUT_DIR = f"{BUCKET}/cleaned_data"
+ITERATIONS = 10
+NUM_PARTITIONS = 300  
 
-spark = SparkSession.builder.appName("PageRankRDD_Optimized").getOrCreate()
-sc = spark.sparkContext
+def compute_contribs(urls, rank):
+    """Calcule la contribution envoyée à chaque voisin."""
+    num_urls = len(urls)
+    for url in urls:
+        yield (url, rank / num_urls)
 
-print(f"Démarrage PageRank RDD avec {NUM_PARTITIONS} partitions...")
+if __name__ == "__main__":
+    spark = SparkSession.builder.appName("PageRankRDD").getOrCreate()
+    sc = spark.sparkContext
 
-# --- 1. Chargement et Préparation des Données ---
+    start_time = time.time()
 
-# Charger edges 10%
-edges_rdd = sc.textFile("data/edges10.tsv") \
-              .map(lambda line: line.split("\t")) \
-              .map(lambda x: (x[0], x[1]))
+    # 1. CHARGEMENT
+    lines = spark.read.parquet(INPUT_DIR).rdd.map(lambda r: (r.src, r.dst))
 
-# Construire la liste d’adjacence (Links RDD)
-# links: (src, [dst1, dst2, ...])
-# Partitionnement initial des liens (Structure statique)
-links = edges_rdd.groupByKey() \
-                 .mapValues(list) \
-                 .partitionBy(NUM_PARTITIONS) \
-                 .cache()  # Cache le RDD statique réutilisé 10 fois
+    # 2. PREPARATION DU GRAPHE 
+    links = lines.distinct(NUM_PARTITIONS) \
+                 .groupByKey(NUM_PARTITIONS) \
+                 .persist(StorageLevel.MEMORY_AND_DISK)
 
-# Extraction du partitionneur pour garantir le co-partitionnement
-partitioner = links.partitioner
+    # 3. INITIALISATION
+    ranks = links.mapValues(lambda v: 1.0)
 
-# --- 2. Initialisation des Ranks ---
+    # 4. BOUCLE PAGERANK
+    for i in range(ITERATIONS):
+        contribs = links.join(ranks).flatMap(
+            lambda x: compute_contribs(x[1][0], x[1][1])
+        )
+        
+        
+        # On force reduceByKey à rester sur 200 partitions
+        # Sinon gros risque de retomber sur le défaut (8 partitions) et crash
+        ranks = contribs.reduceByKey(lambda x, y: x + y, numPartitions=NUM_PARTITIONS) \
+                        .mapValues(lambda x: 0.15 + 0.85 * x)
 
-# Initialiser ranks à 1.0 (ou 1/N si vous voulez être exact, mais 1.0 simplifie la logique)
-# Le Ranks RDD doit être CO-PARTITIONNÉ avec le Links RDD
-nodes = links.keys().distinct()
-ranks = nodes.map(lambda x: (x, 1.0)) \
-             .partitionBy(NUM_PARTITIONS, partitioner) # Co-partitionnement initial
-
-# Début du chronométrage
-start = time.time()
-
-# --- 3. Boucle PageRank RDD (avec Co-Partitionnement) ---
-
-for i in range(NUM_ITERS):
-    # Jointure des liens et des ranks.
-    # Grâce au .partitionBy précédent, cette jointure est locale, sans shuffle !
-    contribs_rdd = links.join(ranks) \
-                        .flatMap(lambda x: [
-                            (dst, x[1][1] / len(x[1][0])) 
-                            # x[1][1] est le rank (valeur de ranks), x[1][0] est la liste des voisins (valeur de links)
-                            for dst in x[1][0]
-                        ])
+    # 5. RESULTAT
+    best = ranks.map(lambda x: (x[1], x[0])).max()
     
-    # Agrégation des contributions par nœud (cette étape nécessite un shuffle)
-    ranks = contribs_rdd.reduceByKey(lambda x,y: x+y, numPartitions=NUM_PARTITIONS) \
-                        .mapValues(lambda rank_sum: DAMPING_FACTOR * rank_sum + (1.0 - DAMPING_FACTOR)) \
-                        .partitionBy(NUM_PARTITIONS, partitioner) # Re-partitionnement garanti pour la prochaine jointure locale
+    end_time = time.time()
     
-    print(f"Iteration {i+1} complète")
+    print(f"TEMPS TOTAL (RDD): {end_time - start_time:.2f} secondes")
+    print(f"GAGNANT: {best[1]} avec un score de {best[0]}")
 
-# Arrêt du chronométrage
-end = time.time()
-
-# --- 4. Résultats ---
-
-# Affichage des 10 meilleurs nœuds
-top_nodes = ranks.takeOrdered(10, key=lambda x: -x[1])
-
-print("\nTop 10 nœuds avec PageRank :")
-for node_id, rank in top_nodes:
-    print(f"{node_id} : {rank}")
-
-print("\nTemps total :", end - start, "secondes")
-
-spark.stop()
+    spark.stop()

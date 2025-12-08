@@ -4,10 +4,10 @@ from pyspark.sql import SparkSession
 from pyspark import StorageLevel
 
 # CONFIGURATION
-BUCKET = "gs://pagerbucket10"
-INPUT_DIR = f"{BUCKET}/cleaned_data"
+BUCKET = "gs://pagerank-data"
+INPUT_DIR = f"{BUCKET}/data/edges_10pc.tsv"
 ITERATIONS = 10
-NUM_PARTITIONS = 300  
+NUM_PARTITIONS = 200  
 
 def compute_contribs(urls, rank):
     """Calcule la contribution envoyée à chaque voisin."""
